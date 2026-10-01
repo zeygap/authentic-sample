@@ -1,0 +1,9 @@
+Sign in to the sample
+
+Open this link in the same browser that requested it. The link can be used once.
+
+{{ url }}
+
+Expires: {{ expires }}
+
+Using a different browser? Start a new login at http://localhost:3000 and choose Sign in with code instead.

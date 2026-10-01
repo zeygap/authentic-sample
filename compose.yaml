@@ -1,0 +1,116 @@
+name: authentic-sample
+x-authentik: &authentik
+  image: ghcr.io/goauthentik/server:2026.8.3
+  restart: unless-stopped
+  environment: &authentik-env
+    AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?Run make start-dev}
+    AUTHENTIK_POSTGRESQL__HOST: postgresql
+    AUTHENTIK_POSTGRESQL__USER: authentik
+    AUTHENTIK_POSTGRESQL__NAME: authentik
+    AUTHENTIK_POSTGRESQL__PASSWORD: ${PG_PASS:?Run make start-dev}
+    AUTHENTIK_EMAIL__HOST: ${SMTP_HOST:-mailpit}
+    AUTHENTIK_EMAIL__PORT: ${SMTP_PORT:-1025}
+    AUTHENTIK_EMAIL__USERNAME: ${SMTP_USERNAME:-}
+    AUTHENTIK_EMAIL__PASSWORD: ${SMTP_PASSWORD:-}
+    AUTHENTIK_EMAIL__FROM: ${SMTP_FROM:-login@example.test}
+    AUTHENTIK_EMAIL__USE_TLS: ${SMTP_USE_TLS:-false}
+    AUTHENTIK_EMAIL__USE_SSL: ${SMTP_USE_SSL:-false}
+    AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD}
+    AUTHENTIK_BOOTSTRAP_EMAIL: admin@example.test
+    OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+    AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+  volumes:
+    - authentik-data:/data
+    - ./authentik/blueprints:/blueprints/custom:ro
+    - ./authentik/templates:/templates:ro
+  depends_on:
+    postgresql:
+      condition: service_healthy
+  shm_size: 512mb
+services:
+  postgresql:
+    image: postgres:16-alpine
+    command: [postgres, -c, jit=off]
+    environment:
+      POSTGRES_DB: authentik
+      POSTGRES_USER: authentik
+      POSTGRES_PASSWORD: ${PG_PASS}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U authentik -d authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    ports:
+      - "127.0.0.1:8025:8025"
+    environment:
+      MP_DATABASE: /data/mailpit.db
+    volumes:
+      - mailpit-data:/data
+  authentik-server:
+    <<: *authentik
+    command: server
+    ports:
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: [CMD, ak, healthcheck]
+      interval: 10s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+  authentik-worker:
+    <<: *authentik
+    command: worker
+    healthcheck:
+      test: [CMD, ak, healthcheck]
+      interval: 10s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+  backend:
+    build: ./backend
+    environment:
+      OIDC_ISSUER: http://localhost:9000/application/o/sample/
+      OIDC_JWKS_URL: http://authentik-server:9000/application/o/sample/jwks/
+      OIDC_AUDIENCE: sample-frontend
+      FRONTEND_ORIGIN: http://localhost:3000
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./backend/app:/app/app:ro
+      - ./backend/tests:/app/tests:ro
+    healthcheck:
+      test: [CMD, /app/.venv/bin/python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    command: [uv, run, --frozen, uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --reload]
+  frontend:
+    build: ./frontend
+    environment:
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      OIDC_CLIENT_ID: sample-frontend
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      OIDC_ISSUER: http://localhost:9000/application/o/sample/
+      OIDC_INTERNAL_URL: http://authentik-server:9000
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./frontend/app:/app/app
+      - ./frontend/lib:/app/lib
+      - ./frontend/types:/app/types
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      start_period: 30s
+      retries: 20
+volumes:
+  postgres-data:
+  authentik-data:
+  mailpit-data:

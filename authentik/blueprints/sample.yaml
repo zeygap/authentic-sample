@@ -1,0 +1,635 @@
+# All authentik application configuration lives in this blueprint.
+version: 1
+metadata:
+  name: Sample - Passwordless OIDC
+entries:
+- model: authentik_flows.flow
+  identifiers:
+    slug: sample-login
+  id: login
+  attrs:
+    name: Sign in with your email
+    title: Sign in with your email
+    designation: authentication
+    authentication: require_unauthenticated
+- model: authentik_flows.flow
+  identifiers:
+    slug: sample-signup
+  id: signup
+  attrs:
+    name: Create your account
+    title: Create your account
+    designation: enrollment
+    authentication: require_unauthenticated
+- model: authentik_flows.flow
+  identifiers:
+    slug: sample-authorize
+  id: authorize
+  attrs:
+    name: Continue to the application
+    title: Continue to the application
+    designation: authorization
+    authentication: require_authenticated
+- model: authentik_flows.flow
+  identifiers:
+    slug: sample-logout
+  id: logout
+  attrs:
+    name: You are signed out
+    title: You are signed out
+    designation: invalidation
+    authentication: none
+- model: authentik_stages_prompt.prompt
+  identifiers:
+    name: sample-email
+  id: email
+  attrs:
+    field_key: email
+    label: Email address
+    type: email
+    order: 0
+    required: true
+- model: authentik_stages_prompt.prompt
+  identifiers:
+    name: sample-method
+  id: method
+  attrs:
+    field_key: login_method
+    label: How would you like to sign in?
+    type: radio-button-group
+    order: 1
+    required: true
+    placeholder: return ['Sign in with magic link', 'Sign in with code instead']
+    placeholder_expression: true
+    initial_value: Sign in with magic link
+- model: authentik_stages_prompt.promptstage
+  identifiers:
+    name: sample-login-prompt
+  id: login-prompt
+  attrs:
+    fields:
+    - !KeyOf 'email'
+    - !KeyOf 'method'
+- model: authentik_stages_redirect.redirectstage
+  identifiers:
+    name: sample-signup-redirect
+  id: signup-redirect
+  attrs:
+    mode: flow
+    target_flow: !KeyOf 'signup'
+    keep_context: true
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-identify
+  id: identify
+  attrs:
+    expression: |-
+      from authentik.core.models import User
+      from django.contrib import messages
+      context = request.context['flow_plan'].context
+      data = context['prompt_data']
+      email = data['email'].strip().lower()
+      data['email'] = email
+      user = User.objects.filter(email__iexact=email).first()
+      if user is None:
+          context.pop('pending_user', None)
+          messages.info(request.http_request, 'This account does not exist yet. Please sign up to continue.')
+          return True
+      context['pending_user'] = user
+      context['login_method'] = data['login_method']
+      return False
+    execution_logging: true
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-magic
+  id: magic
+  attrs:
+    expression: |-
+      context = request.context['flow_plan'].context
+      return context.get('login_method', 'Sign in with magic link') == 'Sign in with magic link'
+    execution_logging: true
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-code
+  id: code
+  attrs:
+    expression: |-
+      context = request.context['flow_plan'].context
+      return context.get('login_method') == 'Sign in with code instead'
+    execution_logging: true
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-inactive-code
+  id: inactive-code
+  attrs:
+    expression: |-
+      context = request.context['flow_plan'].context
+      return context.get('login_method') == 'Sign in with code instead' and not context['pending_user'].is_active
+    execution_logging: true
+- model: authentik_stages_deny.denystage
+  identifiers:
+    name: sample-inactive-deny
+  id: inactive-deny
+  attrs:
+    deny_message: Please verify your account using a magic link first.
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-prepare-link
+  id: prepare-link
+  attrs:
+    expression: |-
+      import secrets
+      context = request.context['flow_plan'].context
+      if context.get('login_method', 'Sign in with magic link') != 'Sign in with magic link':
+          return False
+      if not context.get('is_restored'):
+          nonce = context.get('sample_browser_nonce') or secrets.token_urlsafe(32)
+          context['sample_browser_nonce'] = nonce
+          session = request.http_request.session
+          nonces = session.get('sample_browser_nonces', [])[-9:]
+          session['sample_browser_nonces'] = nonces if nonce in nonces else nonces + [nonce]
+      return True
+    execution_logging: true
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-foreign-browser
+  id: foreign-browser
+  attrs:
+    expression: |-
+      import secrets
+      context = request.context['flow_plan'].context
+      token = context.get('is_restored')
+      if not token:
+          return False
+      original = token.plan.context
+      nonce = original.get('sample_browser_nonce', '')
+      nonces = request.http_request.session.get('sample_browser_nonces', [])
+      same_browser = bool(nonce) and any(secrets.compare_digest(nonce, candidate) for candidate in nonces)
+      same_user = token.user_id == context['pending_user'].pk
+      return not (same_browser and same_user)
+    execution_logging: true
+- model: authentik_stages_deny.denystage
+  identifiers:
+    name: sample-browser-deny
+  id: browser-deny
+  attrs:
+    deny_message: Open this link in the same browser that requested it. Otherwise, start a new login and choose
+      Sign in with code instead.
+- model: authentik_stages_email.emailstage
+  identifiers:
+    name: sample-magic-email
+  id: magic-email
+  attrs:
+    use_global_settings: true
+    token_expiry: minutes=10
+    subject: Your sign-in link
+    template: email/sample_magic.html
+    activate_user_on_success: false
+    recovery_max_attempts: 5
+    recovery_cache_timeout: minutes=5
+- model: authentik_stages_email.emailstage
+  identifiers:
+    name: sample-signup-email
+  id: signup-email
+  attrs:
+    use_global_settings: true
+    token_expiry: minutes=10
+    subject: Complete your registration
+    template: email/sample_signup.html
+    activate_user_on_success: false
+- model: authentik_stages_authenticator_email.authenticatoremailstage
+  identifiers:
+    name: sample-email-device
+  id: email-device
+  attrs:
+    use_global_settings: true
+    token_expiry: minutes=5
+    subject: Your six-digit sign-in code
+    template: email/sample_code.html
+- model: authentik_stages_authenticator_validate.authenticatorvalidatestage
+  identifiers:
+    name: sample-validate-code
+  id: validate-code
+  attrs:
+    device_classes:
+    - email
+    not_configured_action: deny
+    last_auth_threshold: seconds=0
+- model: authentik_stages_user_login.userloginstage
+  identifiers:
+    name: sample-user-login
+  id: user-login
+  attrs:
+    session_duration: hours=1
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-complete-verification
+  id: complete-verification
+  attrs:
+    expression: |-
+      import secrets
+      from authentik.stages.authenticator_email.models import EmailDevice, AuthenticatorEmailStage
+      context = request.context['flow_plan'].context
+      user = context['pending_user']
+      if context.get('login_method', 'Sign in with magic link') == 'Sign in with magic link':
+          token = context.get('is_restored')
+          if not token:
+              return False
+          nonce = token.plan.context.get('sample_browser_nonce', '')
+          nonces = request.http_request.session.get('sample_browser_nonces', [])
+          if token.user_id != user.pk or not nonce or not any(secrets.compare_digest(nonce, x) for x in nonces):
+              return False
+          user.is_active = True
+          user.attributes['email_verified'] = True
+          user.save(update_fields=['is_active', 'attributes'])
+          # Possession of this SAME address has just been verified by the link.
+          # Provision the native email device without asking for a second verification.
+          EmailDevice.objects.get_or_create(user=user, email=user.email, defaults={'stage': AuthenticatorEmailStage.objects.get(name='sample-email-device'), 'confirmed': True})
+          return user.is_active
+      if context.get('login_method') != 'Sign in with code instead':
+          return False
+      devices = context.get('auth_method_args', {}).get('mfa_devices', [])
+      return user.is_active and any(isinstance(d, EmailDevice) and d.user_id == user.pk and d.email == user.email for d in devices)
+    execution_logging: true
+- model: authentik_stages_deny.denystage
+  identifiers:
+    name: sample-proof-deny
+  id: proof-deny
+  attrs:
+    deny_message: Verification failed. Please start a new login.
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'login-prompt'
+    order: 10
+  id: login-10
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'signup-redirect'
+    order: 20
+  id: login-20
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'login-20'
+    policy: !KeyOf 'identify'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: false
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'inactive-deny'
+    order: 25
+  id: login-25
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'login-25'
+    policy: !KeyOf 'inactive-code'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: true
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'magic-email'
+    order: 30
+  id: login-30
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'login-30'
+    policy: !KeyOf 'prepare-link'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: false
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'browser-deny'
+    order: 40
+  id: login-40
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'login-40'
+    policy: !KeyOf 'foreign-browser'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: true
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'validate-code'
+    order: 50
+  id: login-50
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'login-50'
+    policy: !KeyOf 'code'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: false
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'proof-deny'
+    order: 90
+  id: login-90
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'login-90'
+    policy: !KeyOf 'complete-verification'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: true
+    negate: true
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'login'
+    stage: !KeyOf 'user-login'
+    order: 100
+  id: login-100
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_stages_prompt.prompt
+  identifiers:
+    name: sample-first-name
+  id: first-name
+  attrs:
+    field_key: attributes_first_name
+    label: First name
+    type: text
+    order: 1
+    required: true
+- model: authentik_stages_prompt.prompt
+  identifiers:
+    name: sample-last-name
+  id: last-name
+  attrs:
+    field_key: attributes_last_name
+    label: Last name
+    type: text
+    order: 2
+    required: true
+- model: authentik_stages_prompt.prompt
+  identifiers:
+    name: sample-signup-notice
+  id: signup-notice
+  attrs:
+    field_key: signup_notice
+    label: This account does not exist yet. Please sign up to continue.
+    type: alert_info
+    order: -1
+    required: true
+- model: authentik_policies_expression.expressionpolicy
+  identifiers:
+    name: sample-signup-data
+  id: signup-data
+  attrs:
+    expression: |-
+      from authentik.core.models import User
+      data = request.context['prompt_data']
+      email = data['email'].strip().lower()
+      if User.objects.filter(email__iexact=email).exists():
+          ak_message('This email is already registered. Go back and sign in with a magic link.')
+          return False
+      first = data['attributes_first_name'].strip()
+      last = data['attributes_last_name'].strip()
+      if not first or not last:
+          ak_message('Please enter your first and last name.')
+          return False
+      data['email'] = email
+      data['username'] = email
+      data['name'] = first + ' ' + last
+      data['attributes_first_name'] = first
+      data['attributes_last_name'] = last
+      return True
+    execution_logging: true
+- model: authentik_stages_prompt.promptstage
+  identifiers:
+    name: sample-signup-prompt
+  id: signup-prompt
+  attrs:
+    fields:
+    - !KeyOf 'signup-notice'
+    - !KeyOf 'first-name'
+    - !KeyOf 'last-name'
+    - !KeyOf 'email'
+    validation_policies:
+    - !KeyOf 'signup-data'
+- model: authentik_stages_user_write.userwritestage
+  identifiers:
+    name: sample-create-user
+  id: create-user
+  attrs:
+    create_users_as_inactive: true
+    user_creation_mode: always_create
+    user_path_template: users/sample
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'signup'
+    stage: !KeyOf 'signup-prompt'
+    order: 10
+  id: signup-10
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'signup'
+    stage: !KeyOf 'create-user'
+    order: 20
+  id: signup-20
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'signup'
+    stage: !KeyOf 'signup-email'
+    order: 30
+  id: signup-30
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'signup-30'
+    policy: !KeyOf 'prepare-link'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: false
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'signup'
+    stage: !KeyOf 'browser-deny'
+    order: 40
+  id: signup-40
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'signup-40'
+    policy: !KeyOf 'foreign-browser'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: true
+    negate: false
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'signup'
+    stage: !KeyOf 'proof-deny'
+    order: 90
+  id: signup-90
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_policies.policybinding
+  identifiers:
+    target: !KeyOf 'signup-90'
+    policy: !KeyOf 'complete-verification'
+    order: 0
+  attrs:
+    enabled: true
+    timeout: 30
+    failure_result: true
+    negate: true
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'signup'
+    stage: !KeyOf 'user-login'
+    order: 100
+  id: signup-100
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_stages_user_logout.userlogoutstage
+  identifiers:
+    name: sample-user-logout
+  id: user-logout
+- model: authentik_flows.flowstagebinding
+  identifiers:
+    target: !KeyOf 'logout'
+    stage: !KeyOf 'user-logout'
+    order: 10
+  id: logout-10
+  attrs:
+    evaluate_on_plan: false
+    re_evaluate_policies: true
+- model: authentik_providers_oauth2.scopemapping
+  identifiers:
+    name: sample-openid
+  id: scope-openid
+  attrs:
+    scope_name: openid
+    expression: return {}
+- model: authentik_providers_oauth2.scopemapping
+  identifiers:
+    name: sample-email
+  id: scope-email
+  attrs:
+    scope_name: email
+    expression: 'return {''email'': user.email, ''email_verified'': user.attributes.get(''email_verified'', False)}'
+- model: authentik_providers_oauth2.scopemapping
+  identifiers:
+    name: sample-profile
+  id: scope-profile
+  attrs:
+    scope_name: profile
+    expression: 'return {''name'': user.name, ''preferred_username'': user.username}'
+- model: authentik_providers_oauth2.scopemapping
+  identifiers:
+    name: sample-user
+  id: scope-user
+  attrs:
+    scope_name: sample_user
+    expression: 'return {''given_name'': user.attributes.get(''first_name'', ''''), ''family_name'': user.attributes.get(''last_name'',
+      ''''), ''created_at'': user.date_joined.isoformat()}'
+- model: authentik_providers_oauth2.oauth2provider
+  identifiers:
+    name: sample-oidc
+  id: provider
+  attrs:
+    grant_types:
+    - authorization_code
+    client_type: confidential
+    client_id: sample-frontend
+    client_secret: !Env 'OIDC_CLIENT_SECRET'
+    authentication_flow: !KeyOf 'login'
+    authorization_flow: !KeyOf 'authorize'
+    invalidation_flow: !KeyOf 'logout'
+    redirect_uris:
+    - matching_mode: strict
+      url: http://localhost:3000/api/auth/callback/authentik
+    - matching_mode: strict
+      url: http://localhost:3000
+      redirect_uri_type: logout
+    signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+    property_mappings:
+    - !KeyOf 'scope-openid'
+    - !KeyOf 'scope-email'
+    - !KeyOf 'scope-profile'
+    - !KeyOf 'scope-user'
+    access_token_validity: minutes=15
+    sub_mode: user_uuid
+    issuer_mode: per_provider
+    include_claims_in_id_token: true
+- model: authentik_core.application
+  identifiers:
+    slug: sample
+  attrs:
+    name: Passwordless Sample
+    provider: !KeyOf 'provider'
+    meta_launch_url: http://localhost:3000
+- model: authentik_brands.brand
+  identifiers:
+    domain: authentik-default
+  attrs:
+    default: true
+    branding_title: Passwordless Sample
+    flow_authentication: !KeyOf 'login'
+    flow_invalidation: !KeyOf 'logout'

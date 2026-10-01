@@ -1,0 +1,4 @@
+{% extends "email/base.html" %}
+{% block content %}
+<tr><td class="content-wrap"><h1>Your sign-in code</h1><p>Hello {{ user.name }},</p><p>Enter this six-digit code on the device where you started the code login:</p><p style="font-size:32px;letter-spacing:6px">{{ token }}</p><p>Expires: {{ expires }}</p></td></tr>
+{% endblock %}

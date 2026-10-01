@@ -1,0 +1,4 @@
+{% extends "email/base.html" %}
+{% block content %}
+<tr><td class="content-wrap"><h1>Complete your registration</h1><p>Hello {{ user.name }},</p><p>Confirm your email to activate your account and sign in. Open the link in the browser where you registered.</p><p><a href="{{ url }}">Complete your registration</a></p><p>Expires: {{ expires }}</p></td></tr>
+{% endblock %}

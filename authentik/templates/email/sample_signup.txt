@@ -1,0 +1,7 @@
+Complete your registration
+
+Confirm your email to activate your account and sign in. Open the link in the browser where you registered.
+
+{{ url }}
+
+Expires: {{ expires }}

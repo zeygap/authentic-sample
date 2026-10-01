@@ -1,0 +1,4 @@
+Your six-digit sign-in code: {{ token }}
+
+Enter it on the device where you started your code login.
+Expires: {{ expires }}
